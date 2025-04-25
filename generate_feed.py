@@ -2,7 +2,7 @@ import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 
-# *** Konfifuration ***
+# *** Konfiguration ***
 GROUP_ID = "5560460" # Die Zotero Gruppen ID vom IAU
 API_BASE_URL = f"https://api.zotero.org/groups/{GROUP_ID}/items/top"
 OUTPUT_FILENAME = "zotero_feed.xml" # Name der Output-Datei
@@ -12,11 +12,15 @@ FEED_AUTHOR = "IAU" # Author des Feeds
 MAX_LIMIT_PER_REQUEST = 100 # Zotero API Limit pro Seite in machen Quellen auch 150?
 SORT_BY = "dateAdded" # Sortierung der Items
 DIRECTION = "desc" # Sortierrichtung
+GITHUB_USERNAME = "184467gianluca" # Muss für den Link angepasst werden!
+REPO_NAME = "institut-zotero-feed" # Muss für den Link angepasst werden!
 # *** Ende Konfiguration ***
 
 # Namespace für Atom Feeds (war wichtig für XML Verarbeitung)
 ATOM_NS = "http://www.w3.org/2005/Atom"
+ZOTERO_NS = "http://zotero.org/ns/api" # Namespace für Zotero spezifische Daten
 ET.register_namespace("", ATOM_NS) # Standard Namespace setzen
+ET.register_namespace("z", ZOTERO_NS) # Prefix für Zotero Namespace
 
 
 def fetch_zotero_items():
@@ -38,7 +42,7 @@ def fetch_zotero_items():
         try:
             print(f"Rufe Einträge ab: Start={start}, Limit={MAX_LIMIT_PER_REQUEST}")
             response = requests.get(API_BASE_URL, params=params, timeout=30) # Timeout hinzugefügt
-            response.raise_for_status()  # Löst einen Fehler aus bei HTTP-Statuscodes 4xx/5xx
+            response.raise_for_status()   # Löst einen Fehler aus bei HTTP-Statuscodes 4xx/5xx
 
             # Gesamtzahl nur beim ersten Request holen (aus Header)
             if total_results is None and 'Total-Results' in response.headers:
@@ -47,7 +51,6 @@ def fetch_zotero_items():
 
             # XML parsen
             atom_xml = response.text
-            # Korrigiertes Parsen: Atom-Feed im Response ist bereits der Feed, wir brauchen die Einträge
             root = ET.fromstring(atom_xml)
             entries = root.findall(f'{{{ATOM_NS}}}entry') # Einträge finden mit Namespace
 
@@ -85,6 +88,7 @@ def create_combined_feed(entries):
 
     # Haupt-Feed-Element erstellen
     feed = ET.Element(f'{{{ATOM_NS}}}feed')
+    # Entferne die Deklaration des 'html' Namespace hier.
 
     # Feed-Metadaten hinzufügen
     title = ET.SubElement(feed, f'{{{ATOM_NS}}}title')
@@ -96,16 +100,25 @@ def create_combined_feed(entries):
     # Verwende den 'updated' Zeitstempel des *neuesten* Eintrags im Feed
     # oder die aktuelle Zeit, falls Einträge keine gültigen 'updated' haben
     latest_update_time = datetime.now(timezone.utc)
-    entry_update_times = []
+    entry_update_times = {} # Dictionary, um die 'updated' Zeiten pro Eintrag zu speichern
     for entry in entries:
-         updated_tag = entry.find(f'{{{ATOM_NS}}}updated')
-         if updated_tag is not None and updated_tag.text:
-             try:
-                 entry_update_times.append(datetime.fromisoformat(updated_tag.text.replace('Z', '+00:00')))
-             except ValueError:
-                 pass # Ignoriere ungültige Zeitstempel
-    if entry_update_times:
-        latest_update_time = max(entry_update_times)
+        updated_tag = entry.find(f'{{{ATOM_NS}}}updated')
+        if updated_tag is not None and updated_tag.text:
+            try:
+                dt_object = datetime.fromisoformat(updated_tag.text.replace('Z', '+00:00'))
+                entry_update_times[entry] = dt_object
+                latest_update_time = max(latest_update_time, dt_object)
+            except ValueError:
+                pass # Ignoriere ungültige Zeitstempel
+
+        # Titel-Element bearbeiten, um HTML zu escapen oder als HTML zu deklarieren
+        title_tag = entry.find(f'{{{ATOM_NS}}}title')
+        if title_tag is not None and title_tag.text:
+            if "<sub" in title_tag.text:
+                title_tag.set('type', 'html')
+            else:
+                # Sicherstellen, dass keine HTML-Fragmente unbehandelt bleiben
+                title_tag.text = title_tag.text.replace("<", "&lt;").replace(">", "&gt;")
 
     updated = ET.SubElement(feed, f'{{{ATOM_NS}}}updated')
     # Format nach RFC3339 / ISO 8601
@@ -116,13 +129,20 @@ def create_combined_feed(entries):
     name_elem = ET.SubElement(author_elem, f'{{{ATOM_NS}}}name')
     name_elem.text = FEED_AUTHOR
 
-    # Link zum Feed selbst (optional, aber gut)
+    # Link zum Feed selbst
     link_self = ET.SubElement(feed, f'{{{ATOM_NS}}}link', attrib={'rel': 'self', 'href': f"https://{GITHUB_USERNAME}.github.io/{REPO_NAME}/{OUTPUT_FILENAME}"})
-    # Dies muss eventuell angepasst werden, wenn die Action läuft, da der Username/Repo nicht direkt bekannt ist.
-    # Alternativ kann man es weglassen oder eine generische ID verwenden.
 
     # Alle gesammelten Einträge hinzufügen
     for entry in entries:
+        # Entferne Zotero-spezifische Namespaces von den Einträgen, um Interoperabilität zu verbessern
+        # Behalte aber die eigentlichen Elemente bei, falls sie wichtige Daten enthalten
+        for child in list(entry):
+            if child.tag.startswith('{' + ZOTERO_NS + '}'):
+                # Optional: Du könntest hier entscheiden, ob du diese Elemente behalten und
+                # unter einem anderen, generischen Namespace zusammenfassen möchtest.
+                # Für maximale Interoperabilität empfiehlt es sich, sie zu entfernen,
+                # es sei denn, andere Systeme erwarten diese spezifischen Daten.
+                entry.remove(child)
         feed.append(entry)
 
     # XML-Baum in String umwandeln und speichern
@@ -143,12 +163,6 @@ def create_combined_feed(entries):
 
 # --- Hauptausführung ---
 if __name__ == "__main__":
-    # Diese Werte müssen für den Link oben angepasst werden!
-    # Im GitHub Action Kontext kann man sie über Umgebungsvariablen bekommen,
-    # z.B. GITHUB_REPOSITORY = 'username/repo-name'
-    GITHUB_USERNAME = "184467gianluca"
-    REPO_NAME = "institut-zotero-feed"
-
     zotero_entries = fetch_zotero_items()
     if zotero_entries is not None:
         create_combined_feed(zotero_entries)
