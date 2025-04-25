@@ -1,0 +1,54 @@
+name: Update Zotero Feed
+
+# Trigger: Wann soll der Workflow laufen?
+on:
+  schedule:
+    # Läuft täglich um 08:00 Uhr UTC (passen Sie die Zeit bei Bedarf an)
+    # Cron Syntax: Minute Stunde Tag(Monat) Monat Tag(Woche)
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+    # Ermöglicht manuelles Starten über die GitHub Actions UI (nützlich zum Testen)
+
+jobs:
+  build-and-commit-feed:
+    runs-on: ubuntu-latest # Betriebssystem des Runners
+
+    steps:
+    # Schritt 1: Code auschecken
+    - name: Check out repository code
+      uses: actions/checkout@v4
+
+    # Schritt 2: Python einrichten
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.9' # Sie können hier eine spezifische Python-Version wählen
+
+    # Schritt 3: Abhängigkeiten installieren
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    # Schritt 4: Feed generieren
+    # Hier werden die GitHub-Variablen verwendet, um den Link korrekt zu setzen
+    - name: Generate Zotero feed
+      env:
+        # Umgebungsvariablen für das Python Skript setzen
+        GITHUB_USERNAME: ${{ github.repository_owner }} # Holt den Besitzer des Repos
+        REPO_NAME: ${{ github.event.repository.name }} # Holt den Namen des Repos
+      run: python generate_feed.py
+
+    # Schritt 5: Änderungen committen (nur wenn sich die Feed-Datei geändert hat)
+    - name: Commit updated feed
+      uses: stefanzweifel/git-auto-commit-action@v5
+      with:
+        commit_message: "Automated update of Zotero feed" # Commit-Nachricht
+        branch: ${{ github.ref_name }} # Commit auf denselben Branch, von dem ausgecheckt wurde (z.B. main)
+        commit_options: '--no-verify --signoff' # Optionen für den Commit
+        file_pattern: '*.xml' # Nur XML-Dateien (unsere Feed-Datei) berücksichtigen
+        # commit_user_name: GitHub Action Bot # Name des Committers (optional)
+        # commit_user_email: action@github.com # Email des Committers (optional)
+        # commit_author: ${{ github.actor }} <${{ github.actor }}@users.noreply.github.com> # Autor auf den Auslöser setzen (optional)
+        skip_dirty_check: false # Stellt sicher, dass nur bei Änderungen committet wird
+        skip_fetch: true # Spart Zeit, da wir schon auf dem neuesten Stand sein sollten
