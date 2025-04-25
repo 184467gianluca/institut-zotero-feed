@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+*.egg-info/
+dist/
+build/
+*.log
+# Fügen Sie hier ggf. lokale Test-Feed-Dateien hinzu, wenn Sie sie nicht committen wollen
+# zotero_feed.xml # Auskommentieren oder entfernen, wenn die Datei im Repo sein soll!
