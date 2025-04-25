@@ -1,7 +1,8 @@
 import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
-import re # Für Jahreszahl-Extraktion
+import re # Für Jahreszahl-Extraktion und HTML-Strip
+from urllib.parse import quote # Für URL-Encoding
 
 # --- Konfiguration ---
 GROUP_ID = "5560460" # Die Zotero Gruppen ID vom IAU
@@ -22,11 +23,25 @@ DIRECTION = "desc" # Sortierrichtung ('asc' oder 'desc')
 # Präfix für Tags, die als Arbeitsgruppe interpretiert werden sollen (AKTUELL DEAKTIVIERT)
 AG_TAG_PREFIX = "AG "
 
-# GitHub Pages Konfiguration (nur für Fallback-GUID relevant)
+# GitHub Pages Konfiguration (für atom:link und Fallback-GUID)
 GITHUB_USERNAME = "184467gianluca"
 REPO_NAME = "institut-zotero-feed"
+FEED_URL = f"https://{GITHUB_USERNAME}.github.io/{REPO_NAME}/{OUTPUT_FILENAME}"
 # --- Ende Konfiguration ---
 
+# Namespace für Atom Link (wird im RSS eingebettet)
+ATOM_NS = "http://www.w3.org/2005/Atom"
+
+
+def clean_html(raw_html):
+  """Entfernt HTML-Tags aus einem String."""
+  if not raw_html:
+      return ""
+  cleanr = re.compile('<.*?>')
+  cleantext = re.sub(cleanr, '', str(raw_html))
+  # Zusätzlich HTML-Entities dekodieren (z.B. &amp; -> &)
+  import html
+  return html.unescape(cleantext)
 
 def extract_year(date_str):
     """Versucht, die vierstellige Jahreszahl aus einem Datumsstring zu extrahieren."""
@@ -38,11 +53,19 @@ def extract_year(date_str):
         return match.group(1)
     # Fallback für einfache Jahreszahlen
     try:
-        if isinstance(date_str, int) and 1900 < date_str < 2100:
-             return str(date_str)
-    except:
+        # Check if it's an integer representation of a year
+        if isinstance(date_str, (int, float)) and 1900 < int(date_str) < 2100:
+             return str(int(date_str))
+        # Check if it's a string that can be parsed as a year
+        if isinstance(date_str, str):
+             dt = datetime.strptime(date_str, '%Y') # Try parsing just year
+             return dt.strftime('%Y')
+    except ValueError: # Handle cases where parsing fails
+        pass
+    except TypeError: # Handle cases where type conversion fails
         pass
     return None
+
 
 def format_authors(creators):
     """Formatiert die Autorenliste aus dem creators-Array."""
@@ -50,10 +73,17 @@ def format_authors(creators):
         return ""
     author_list = []
     for creator in creators:
+        # Ensure creator is a dictionary
+        if not isinstance(creator, dict):
+            continue
         # Nur Autoren berücksichtigen
         if creator.get('creatorType') == 'author':
             last_name = creator.get('lastName', '')
             first_name = creator.get('firstName', '')
+            # Ensure names are strings
+            last_name = str(last_name) if last_name is not None else ''
+            first_name = str(first_name) if first_name is not None else ''
+
             if last_name and first_name:
                 # Standard-Reihenfolge (Nachname, Vorname) - Anpassen falls gewünscht
                 author_list.append(f"{last_name}, {first_name}")
@@ -63,34 +93,49 @@ def format_authors(creators):
                 # Sollte nicht vorkommen, aber sicherheitshalber
                 author_list.append(first_name)
             elif creator.get('name'): # Für institutionelle Autoren etc.
-                 author_list.append(creator['name'])
+                 author_list.append(str(creator['name']))
 
-    return ", ".join(author_list)
+    return ", ".join(filter(None, author_list)) # Filter out empty strings
 
 def find_best_link_json(item_data):
-    """Sucht den besten Link (DOI, URL) aus den JSON-Daten."""
+    """Sucht den besten Link (DOI, URL) aus den JSON-Daten und kodiert ihn korrekt."""
     doi = item_data.get('DOI')
     if doi and str(doi).strip():
-        # Ensure DOI doesn't already start with http(s)://doi.org/
         doi_text = str(doi).strip()
+        # Entferne häufige fehlerhafte Präfixe wie "DOI ", "doi:", "/" etc.
+        doi_text = re.sub(r'^(doi\s*:?\s*/*)+', '', doi_text, flags=re.IGNORECASE)
+
+        # URL-Encode nur den DOI-Teil, nicht die ganze URL
+        # Ersetze unsichere Zeichen wie < > durch ihre Kodierung
+        # quote() kodiert standardmäßig keine Slashes '/', was für DOIs okay ist
+        # quote() kodiert auch keine Semikolons ';', was problematisch sein *könnte*,
+        # aber oft in DOIs vorkommt. Wir lassen es erstmal so.
+        # Wichtig: Leerzeichen werden zu %20 kodiert.
+        safe_doi_text = quote(doi_text, safe='/:()') # Erlaube Slashes, Doppelpunkte, Klammern
+
+        # Konstruiere die finale URL
+        # Prüfe, ob der ursprüngliche Text bereits eine volle URL war
         if doi_text.startswith('http://doi.org/') or doi_text.startswith('https://doi.org/'):
-            return doi_text
+             # Wenn ja, parse und re-encode nur den Pfad-Teil
+             from urllib.parse import urlparse, urlunparse
+             parsed = urlparse(doi_text)
+             safe_path = quote(parsed.path, safe='/:()')
+             return urlunparse((parsed.scheme, parsed.netloc, safe_path, parsed.params, parsed.query, parsed.fragment))
         else:
-            # Remove potential leading slashes or other prefixes before adding https://doi.org/
-            doi_text = re.sub(r'^(doi:|/)+', '', doi_text)
-            return f"https://doi.org/{doi_text}"
+             # Andernfalls, baue die URL neu auf
+             return f"https://doi.org/{safe_doi_text}"
 
 
     url = item_data.get('url')
     if url and str(url).strip().startswith(('http://', 'https://')):
+        # Hier gehen wir davon aus, dass die URL bereits korrekt ist.
+        # Eine zusätzliche Validierung/Kodierung könnte hier erfolgen, ist aber komplex.
         return str(url).strip()
 
     # Fallback: Link zur Zotero-Seite (aus 'links'->'alternate')
-    # Check if 'links' exists and is a dictionary
     links_data = item_data.get('links')
     if isinstance(links_data, dict) and 'alternate' in links_data:
         alt_link_data = links_data['alternate']
-        # Check if 'alternate' link data is a dictionary and has 'href'
         if isinstance(alt_link_data, dict):
              alt_link = alt_link_data.get('href')
              if alt_link:
@@ -101,20 +146,23 @@ def find_best_link_json(item_data):
 def get_categories_json(item_data, year):
     """Extrahiert Kategorien (Jahr, AG-Tags - AG aktuell deaktiviert) aus den JSON-Daten."""
     categories = []
-    # 1. Jahreszahl hinzufügen
-    if year:
-        categories.append(year)
+    # 1. Jahreszahl hinzufügen (nur wenn gültig)
+    if year and str(year).isdigit() and len(str(year)) == 4:
+        categories.append(str(year))
 
     # 2. Arbeitsgruppen-Tags hinzufügen (AKTUELL AUSKOMMENTIERT)
     #    -> Um dies zu aktivieren, entfernen Sie die Kommentarzeichen (#)
     #       in den folgenden Zeilen, sobald die Tags in Zotero existieren.
     # tags = item_data.get('tags', [])
-    # for tag_info in tags:
-    #     tag = tag_info.get('tag')
-    #     if tag and tag.startswith(AG_TAG_PREFIX):
-    #         # Füge den Tag ohne Präfix hinzu (oder mit, je nach Wunsch)
-    #         # categories.append(tag) # Mit Präfix
-    #         categories.append(tag[len(AG_TAG_PREFIX):].strip()) # Ohne Präfix
+    # if isinstance(tags, list): # Ensure tags is a list
+    #     for tag_info in tags:
+    #         # Ensure tag_info is a dictionary and has 'tag' key
+    #         if isinstance(tag_info, dict) and 'tag' in tag_info:
+    #             tag = tag_info.get('tag')
+    #             if tag and isinstance(tag, str) and tag.startswith(AG_TAG_PREFIX):
+    #                 # Füge den Tag ohne Präfix hinzu (oder mit, je nach Wunsch)
+    #                 # categories.append(tag) # Mit Präfix
+    #                 categories.append(tag[len(AG_TAG_PREFIX):].strip()) # Ohne Präfix
 
     # 3. AG-Leiter kann hier nicht automatisch ermittelt werden
 
@@ -132,7 +180,6 @@ def fetch_zotero_items():
     while True:
         params = {
             'format': 'json', # JSON-Format anfordern
-            # 'include': 'data,bib', # 'data' ist in JSON meist Standard, 'bib' könnte nützlich sein für Titelformatierung
             'sort': SORT_BY,
             'direction': DIRECTION,
             'limit': MAX_LIMIT_PER_REQUEST,
@@ -140,17 +187,14 @@ def fetch_zotero_items():
         }
         try:
             print(f"Rufe Einträge ab: Start={start}, Limit={MAX_LIMIT_PER_REQUEST}")
-            # Wichtig: Zotero API Version Header hinzufügen
             headers = {'Zotero-API-Version': '3'}
             response = requests.get(fetch_url, params=params, headers=headers, timeout=60)
             response.raise_for_status()
 
-            # Gesamtzahl nur beim ersten Request holen (aus Header)
             if total_results is None and 'Total-Results' in response.headers:
                 total_results = int(response.headers['Total-Results'])
                 print(f"Gesamtzahl der Einträge laut API: {total_results}")
 
-            # JSON parsen
             items_json = response.json()
 
             if not items_json:
@@ -159,33 +203,32 @@ def fetch_zotero_items():
 
             print(f"{len(items_json)} Einträge auf dieser Seite gefunden.")
 
-            # Extrahiere die benötigten Daten aus jedem JSON-Item
             for item in items_json:
-                # Ensure item is a dictionary before proceeding
                 if not isinstance(item, dict):
                     print(f"Warnung: Unerwartetes Format für Eintrag gefunden, überspringe: {item}")
                     continue
 
-                item_data = item.get('data', {}) # Die relevanten Felder sind im 'data'-Objekt
-                # Ensure item_data is a dictionary
+                item_data = item.get('data', {})
                 if not isinstance(item_data, dict):
                      print(f"Warnung: Unerwartetes 'data'-Format für Eintrag {item.get('key')}, überspringe.")
                      continue
 
-
                 # --- Datenextraktion ---
-                title = item_data.get('title', "Unbekannter Titel")
+                # Titel extrahieren und HTML entfernen
+                title_raw = item_data.get('title', '')
+                title = clean_html(title_raw) # HTML entfernen
+                if not title: # Fallback, falls Titel leer ist
+                    title = "[Titel nicht verfügbar]"
+
                 creators = item_data.get('creators', [])
-                date_str = item_data.get('date') # Kann Jahr, Datum, etc. sein
-                journal_abbr = item_data.get('journalAbbreviation')
-                pub_title = item_data.get('publicationTitle') # Fallback für Journal
+                date_str = item_data.get('date')
+                journal_abbr = clean_html(item_data.get('journalAbbreviation')) # Auch hier HTML entfernen
+                pub_title = clean_html(item_data.get('publicationTitle')) # Auch hier HTML entfernen
                 volume = item_data.get('volume')
-                # issue = item_data.get('issue') # Falls doch benötigt
-                # pages = item_data.get('pages') # Falls doch benötigt
 
                 year = extract_year(date_str)
                 authors_formatted = format_authors(creators)
-                journal_display = journal_abbr if journal_abbr else pub_title # Bevorzuge Abkürzung
+                journal_display = journal_abbr if journal_abbr else pub_title
 
                 # --- RSS Felder zusammenbauen ---
                 # Titel-Tag
@@ -194,20 +237,29 @@ def fetch_zotero_items():
                     rss_title_parts.append(authors_formatted)
                 if year:
                     rss_title_parts.append(f"({year})")
-                # Ensure title is a string
-                rss_title_parts.append(str(title))
+                rss_title_parts.append(str(title)) # Sicherstellen, dass Titel ein String ist
                 if journal_display:
                      rss_title_parts.append(str(journal_display))
                 if volume:
                      rss_title_parts.append(str(volume))
-                # Trennzeichen: Punkt, außer vor der Jahreszahl-Klammer
+
                 rss_title = ""
                 for i, part in enumerate(rss_title_parts):
-                    if part: # Nur hinzufügen, wenn Teil vorhanden ist
-                        part_str = str(part) # Sicherstellen, dass es ein String ist
+                    if part:
+                        part_str = str(part)
+                        # Füge Punkt hinzu, außer beim ersten Element oder wenn es die Jahreszahl ist
                         if i > 0 and not part_str.startswith('('):
                             rss_title += ". "
+                        # Füge Leerzeichen nach der Jahreszahl-Klammer hinzu, wenn mehr folgt
+                        elif part_str.endswith(')') and i < len(rss_title_parts) - 1 and rss_title_parts[i+1]:
+                             rss_title += part_str + " "
+                             continue # Gehe zum nächsten Teil über
                         rss_title += part_str
+
+                # Fallback für komplett leeren Titel
+                if not rss_title.strip():
+                    rss_title = "[Kein Titel verfügbar]"
+
 
                 # Link-Tag
                 rss_link = find_best_link_json(item_data)
@@ -215,31 +267,23 @@ def fetch_zotero_items():
                 # Kategorien
                 rss_categories = get_categories_json(item_data, year)
 
-                # GUID (Eindeutige ID für Feed Reader)
-                # Zotero Key oder Item ID ist gut geeignet
+                # GUID
                 guid = item.get('key') or item_data.get('key')
-                if not guid and rss_link: # Fallback auf Link
+                if not guid and rss_link:
                     guid = rss_link
-                elif not guid: # Letzter Fallback auf Titel
-                     guid = rss_title
-
-                # Veröffentlichungsdatum (optional für RSS, aber gut zu haben)
-                # Hier verwenden wir nur das Jahr für Kategorien, aber man könnte auch pubDate hinzufügen
-                # pub_date_rss = ... (Code von vorher anpassen, falls benötigt)
-
+                elif not guid:
+                     guid = rss_title # Fallback auf den (hoffentlich nicht leeren) Titel
 
                 all_items_data.append({
                     'rss_title': rss_title,
                     'rss_link': rss_link,
                     'rss_categories': rss_categories,
                     'guid': guid,
-                    # 'pubDate': pub_date_rss # Auskommentiert, da nicht explizit gefordert
                 })
 
 
-            start += len(items_json) # Erhöhe um die Anzahl der erhaltenen Items
+            start += len(items_json)
 
-            # Sicherheitsabbrüche
             if total_results is not None and start >= total_results:
                 print("Alle erwarteten Einträge abgerufen.")
                 break
@@ -249,16 +293,12 @@ def fetch_zotero_items():
 
         except requests.exceptions.RequestException as e:
             print(f"Fehler bei API-Abruf: {e}")
-            # Bei Fehlern die teilweise gesammelten Daten zurückgeben? Oder None?
-            # return None # Sicherer: Bei Fehler abbrechen
             print("Versuche, mit bisher gesammelten Daten fortzufahren...")
-            break # Breche die Schleife ab, verarbeite, was wir haben
-        except Exception as e: # Breitere Ausnahmebehandlung für JSON-Parsing etc.
+            break
+        except Exception as e:
             print(f"Unerwarteter Fehler beim Verarbeiten der Daten: {e}")
-            # Check if response exists before trying to access its text attribute
             error_context = response.text[:500] if 'response' in locals() and hasattr(response, 'text') else "Keine Antwortdaten verfügbar"
             print(f"Fehlerhafte Antwort/Kontext (erste 500 Zeichen): {error_context}")
-            # return None
             print("Versuche, mit bisher gesammelten Daten fortzufahren...")
             break
 
@@ -266,13 +306,18 @@ def fetch_zotero_items():
     return all_items_data
 
 def create_rss_feed(items_data):
-    """Erstellt einen neuen, minimalen RSS 2.0 Feed."""
-    if not items_data: # Prüfe auf leere Liste oder None
+    """Erstellt einen neuen, minimalen RSS 2.0 Feed mit Validierungs-Fixes."""
+    if not items_data:
         print("Keine Einträge zum Erstellen des Feeds vorhanden.")
         return None
 
+    # Registriere den Atom-Namespace für den self-Link
+    ET.register_namespace('atom', ATOM_NS)
+
     # RSS Root-Element erstellen
-    rss = ET.Element('rss', version="2.0")
+    # Füge das Atom-Namespace-Attribut hinzu
+    rss = ET.Element('rss', version="2.0", attrib={f"{{{ATOM_NS}}}link": ""}) # Dummy-Attribut, wird unten gesetzt
+
     # Channel-Element erstellen
     channel = ET.SubElement(rss, 'channel')
 
@@ -286,50 +331,62 @@ def create_rss_feed(items_data):
     # Zeitstempel der Generierung
     now_rfc822 = datetime.now(timezone.utc).strftime('%a, %d %b %Y %H:%M:%S GMT')
     ET.SubElement(channel, 'lastBuildDate').text = now_rfc822
-    ET.SubElement(channel, 'generator').text = "Zotero Feed Generator Script (Minimal)"
+    ET.SubElement(channel, 'generator').text = "Zotero Feed Generator Script (Minimal, Validated)"
+
+    # Atom Link (self) hinzufügen - Empfehlung vom Validator
+    # Das Attribut wird hier korrekt gesetzt
+    atom_link_attrib = {
+        '{' + ATOM_NS + '}href': FEED_URL, # Verwende die konfigurierte Feed URL
+        '{' + ATOM_NS + '}rel': 'self',
+        '{' + ATOM_NS + '}type': 'application/rss+xml'
+    }
+    # Korrektur: Füge atom:link als Element hinzu, nicht als Attribut von <rss>
+    ET.SubElement(channel, f'{{{ATOM_NS}}}link', attrib=atom_link_attrib)
+
 
     # Alle gesammelten Einträge als <item> hinzufügen
     for item_data in items_data:
         item = ET.SubElement(channel, 'item')
-        # Ensure title is a string before setting
-        ET.SubElement(item, 'title').text = str(item_data.get('rss_title', ''))
 
+        # Titel (sicherstellen, dass nicht leer)
+        item_title = str(item_data.get('rss_title', '[Titel nicht verfügbar]')).strip()
+        if not item_title:
+             item_title = '[Titel nicht verfügbar]'
+        ET.SubElement(item, 'title').text = item_title
+
+        # Link (nur wenn vorhanden und gültig)
         rss_link = item_data.get('rss_link')
-        if rss_link:
-            # Ensure link is a string
-            ET.SubElement(item, 'link').text = str(rss_link)
-        # else: Kein Fallback-Link mehr nötig? Oder Link zum Channel?
-
-        # Keine <description> mehr
+        if rss_link and isinstance(rss_link, str) and rss_link.startswith(('http://', 'https://')):
+            ET.SubElement(item, 'link').text = rss_link
+        # else: Optional: Fallback-Link zum Channel oder zur Zotero-Seite?
 
         # Kategorien hinzufügen
         rss_categories = item_data.get('rss_categories', [])
-        if isinstance(rss_categories, list): # Ensure it's a list
+        if isinstance(rss_categories, list):
              for category_name in rss_categories:
-                 # Ensure category name is a string
-                 ET.SubElement(item, 'category').text = str(category_name)
+                 if category_name: # Nur nicht-leere Kategorien hinzufügen
+                    ET.SubElement(item, 'category').text = str(category_name)
 
         # GUID hinzufügen
         guid_is_permalink = "false"
         guid_text = item_data.get('guid')
         if guid_text and str(guid_text).startswith(('http://', 'https://')):
              guid_is_permalink = "true"
-        # Stelle sicher, dass GUID Text hat
-        if not guid_text:
-             guid_text = item_data.get('rss_title', '') # Letzter Fallback
+
+        if not guid_text: # Fallback, falls GUID fehlt
+             guid_text = item_title # Verwende Titel als Fallback GUID
 
         guid_elem = ET.SubElement(item, 'guid', isPermaLink=guid_is_permalink)
-        # Ensure GUID text is a string
         guid_elem.text = str(guid_text)
-
-        # <pubDate> ist optional und aktuell nicht hinzugefügt
 
     # XML-Baum in String umwandeln und speichern
     try:
-        ET.indent(rss, space="  ", level=0)
+        # ET.indent(rss, space="  ", level=0) # Einrückung kann manchmal Probleme mit Namespaces machen, optional
         tree = ET.ElementTree(rss)
-        tree.write(OUTPUT_FILENAME, encoding="utf-8", xml_declaration=True)
-        print(f"Minimaler RSS Feed erfolgreich in '{OUTPUT_FILENAME}' geschrieben.")
+        # Wichtig: encoding='utf-8' und xml_declaration=True für korrekte Datei
+        # method='xml' stellt sicher, dass Namespace-Präfixe verwendet werden (wie atom:)
+        tree.write(OUTPUT_FILENAME, encoding="utf-8", xml_declaration=True, method='xml')
+        print(f"Minimaler RSS Feed erfolgreich in '{OUTPUT_FILENAME}' geschrieben (mit Validierungs-Fixes).")
         return True
     except Exception as e:
         print(f"Fehler beim Schreiben der RSS-Datei: {e}")
@@ -338,7 +395,8 @@ def create_rss_feed(items_data):
 # --- Hauptausführung ---
 if __name__ == "__main__":
     zotero_items_data = fetch_zotero_items()
-    if zotero_items_data is not None: # Auch leere Liste ist okay
+    if zotero_items_data is not None:
         create_rss_feed(zotero_items_data)
     else:
         print("Feed-Generierung fehlgeschlagen, da keine Daten abgerufen werden konnten.")
+
