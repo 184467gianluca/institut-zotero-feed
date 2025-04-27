@@ -9,14 +9,11 @@ import logging
 # --- Konfiguration ---
 GROUP_ID = "5560460" # Die Zotero Gruppen ID vom IAU
 API_BASE_URL = f"https://api.zotero.org/groups/{GROUP_ID}/items" # Basis-URL für Items
-# MODIFIZIERT: Dateiname zurück geändert
-OUTPUT_FILENAME = "zotero_rss_minimal.xml"
+OUTPUT_FILENAME = "zotero_rss_minimal.xml" # Beibehaltung des ursprünglichen Namens
 
 # RSS Channel Konfiguration
-# MODIFIZIERT: Titel zurück geändert
 RSS_CHANNEL_TITLE = "IAU Publications (Minimal)"
 RSS_CHANNEL_LINK = "https://www.iau.uni-frankfurt.de" # Hauptlink des Instituts
-# MODIFIZIERT: Beschreibung zurück geändert
 RSS_CHANNEL_DESCRIPTION = "Publikationen des Instituts für Atmosphäre und Umwelt (IAU) - Minimalformat"
 RSS_CHANNEL_LANGUAGE = "de-DE" # Sprache des Feeds (z.B. de-DE oder en-US)
 
@@ -25,14 +22,12 @@ ZOTERO_ITEM_TYPE = "items/top" # Nur Top-Level Items
 MAX_LIMIT_PER_REQUEST = 100 # Zotero API Limit pro Seite
 SORT_BY = "dateAdded" # Sortierung der Items ('dateAdded', 'dateModified', 'title')
 DIRECTION = "desc" # Sortierrichtung ('asc' oder 'desc')
-# MODIFIZIERT: Präfix für Tags, die als Arbeitsgruppe interpretiert werden sollen (WIEDER DEAKTIVIERT)
-AG_TAG_PREFIX = "AG " # Z.B. "AG Biskitz" -> Kategorie "Biskitz"
+# Präfix für Tags, die als Arbeitsgruppe interpretiert werden sollen (DEAKTIVIERT)
+AG_TAG_PREFIX = "AG "
 
 # GitHub Pages Konfiguration (für atom:link und Fallback-GUID)
-# Stelle sicher, dass diese Werte korrekt sind für den finalen Feed-URL
 GITHUB_USERNAME = "184467gianluca"
 REPO_NAME = "institut-zotero-feed"
-# MODIFIZIERT: Verwende den ursprünglichen Dateinamen im Feed-URL
 FEED_URL = f"https://{GITHUB_USERNAME}.github.io/{REPO_NAME}/{OUTPUT_FILENAME}"
 # --- Ende Konfiguration ---
 
@@ -162,10 +157,7 @@ def get_categories_json(item_data, year):
     if year and str(year).isdigit() and len(str(year)) == 4:
         categories.append(str(year))
 
-    # 2. Arbeitsgruppen-Tags hinzufügen (WIEDER DEAKTIVIERT)
-    #    -> Um dies zu aktivieren, entfernen Sie die Kommentarzeichen (#)
-    #       in den folgenden Zeilen, sobald die Tags in Zotero existieren.
-    # ag_found = False
+    # 2. Arbeitsgruppen-Tags hinzufügen (DEAKTIVIERT)
     # tags = item_data.get('tags', [])
     # if isinstance(tags, list):
     #     for tag_info in tags:
@@ -173,14 +165,8 @@ def get_categories_json(item_data, year):
     #             tag = tag_info.get('tag')
     #             if tag and isinstance(tag, str) and tag.startswith(AG_TAG_PREFIX):
     #                 ag_name = tag[len(AG_TAG_PREFIX):].strip()
-    #                 if ag_name: # Nur hinzufügen, wenn nach dem Präfix noch Text übrig ist
+    #                 if ag_name:
     #                     categories.append(ag_name)
-    #                     ag_found = True
-    #                     logging.debug(f"Arbeitsgruppen-Tag gefunden: '{tag}' -> Kategorie: '{ag_name}' für Item {item_data.get('key')}")
-    #                 else:
-    #                     logging.warning(f"AG-Tag '{tag}' für Item {item_data.get('key')} ist nach Präfix leer.")
-
-    # 3. AG-Leiter: Kann hier nicht automatisch ermittelt werden.
 
     return list(set(categories)) # Duplikate entfernen
 
@@ -268,7 +254,6 @@ def fetch_zotero_items():
                     authors_formatted = format_authors(creators)
                     journal_display = journal_abbr if journal_abbr else pub_title
                     best_link = find_best_link_json(item_data)
-                    # MODIFIZIERT: Ruft jetzt nur noch Jahr als Kategorie ab
                     categories = get_categories_json(item_data, year)
 
                     if not title:
@@ -315,7 +300,7 @@ def fetch_zotero_items():
     return all_items_data
 
 def create_rss_feed(items_data):
-    """Erstellt den RSS Feed im minimalen Format mit Boss-Titelstruktur."""
+    """Erstellt den RSS Feed im minimalen Format mit angepasster Titelstruktur und Einrückung."""
     if not items_data:
         logging.warning("Keine Einträge zum Erstellen des Feeds vorhanden.")
         return None
@@ -325,7 +310,7 @@ def create_rss_feed(items_data):
     rss.set(f'xmlns:atom', ATOM_NS)
     channel = ET.SubElement(rss, 'channel')
 
-    # Channel-Metadaten (zurück auf Minimal)
+    # Channel-Metadaten
     ET.SubElement(channel, 'title').text = RSS_CHANNEL_TITLE
     ET.SubElement(channel, 'link').text = RSS_CHANNEL_LINK
     ET.SubElement(channel, 'description').text = RSS_CHANNEL_DESCRIPTION
@@ -335,7 +320,6 @@ def create_rss_feed(items_data):
     now_rfc822 = datetime.now(timezone.utc).strftime('%a, %d %b %Y %H:%M:%S GMT')
     ET.SubElement(channel, 'lastBuildDate').text = now_rfc822
     ET.SubElement(channel, 'pubDate').text = now_rfc822
-    # MODIFIZIERT: Generator-Text zurück geändert
     ET.SubElement(channel, 'generator').text = "Zotero Feed Generator Script (Minimal)"
 
     # Atom Link (self)
@@ -347,7 +331,7 @@ def create_rss_feed(items_data):
     for item_data in items_data:
         item = ET.SubElement(channel, 'item')
 
-        # --- <title> zusammenbauen (Boss-Format beibehalten) ---
+        # --- <title> zusammenbauen (angepasstes Format) ---
         title_parts = []
         authors = item_data.get('authors')
         year = item_data.get('year')
@@ -375,9 +359,10 @@ def create_rss_feed(items_data):
             elif part_str.startswith('('):
                 rss_item_title += f" {part_str}"
             else:
-                if rss_item_title and not rss_item_title.endswith(')'):
+                # Füge Punkt hinzu, wenn der vorherige Teil nicht mit Klammer endete und nicht leer war
+                if rss_item_title and not rss_item_title.strip().endswith(')'):
                      rss_item_title += "."
-                rss_item_title += f" {part_str}"
+                rss_item_title += f" {part_str}" # Immer Leerzeichen davor
 
         ET.SubElement(item, 'title').text = rss_item_title.strip()
 
@@ -416,18 +401,30 @@ def create_rss_feed(items_data):
 
     # XML-Baum speichern
     try:
-        # ET.indent(rss, space="  ", level=0)
+        # NEU: XML-Baum vor dem Speichern formatieren (Einrückung hinzufügen)
+        # Verfügbar ab Python 3.9
+        # Benutzt 2 Leerzeichen für die Einrückung (space="  ")
+        # Level=0 startet die Einrückung beim Root-Element
+        ET.indent(rss, space="  ", level=0)
+
         tree = ET.ElementTree(rss)
         tree.write(OUTPUT_FILENAME, encoding="utf-8", xml_declaration=True, method='xml')
-        logging.info(f"{item_count} Einträge erfolgreich in '{OUTPUT_FILENAME}' geschrieben.")
+        logging.info(f"{item_count} Einträge erfolgreich formatiert in '{OUTPUT_FILENAME}' geschrieben.")
         return True
+    except AttributeError:
+        # Fallback für ältere Python-Versionen ohne ET.indent()
+        logging.warning("ET.indent() nicht verfügbar (benötigt Python 3.9+). XML wird ohne Einrückung geschrieben.")
+        tree = ET.ElementTree(rss)
+        tree.write(OUTPUT_FILENAME, encoding="utf-8", xml_declaration=True, method='xml')
+        logging.info(f"{item_count} Einträge erfolgreich (unformatiert) in '{OUTPUT_FILENAME}' geschrieben.")
+        return True # War trotzdem erfolgreich im Schreiben
     except Exception as e:
         logging.error(f"Fehler beim Schreiben der RSS-Datei: {e}")
         return False
 
 # --- Hauptausführung ---
 if __name__ == "__main__":
-    logging.info("Starte Zotero RSS Feed Generator Skript (Minimal - Boss Title)...")
+    logging.info("Starte Zotero RSS Feed Generator Skript (Minimal - Angepasster Titel - Formatiert)...")
     zotero_items_data = fetch_zotero_items()
     if zotero_items_data is not None and len(zotero_items_data) > 0:
         if create_rss_feed(zotero_items_data):
