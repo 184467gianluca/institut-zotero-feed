@@ -305,9 +305,13 @@ def create_rss_feed(items_data):
         logging.warning("Keine Einträge zum Erstellen des Feeds vorhanden.")
         return None
 
+    # Registriere den Namespace, damit ET ihn bei Bedarf automatisch hinzufügt
     ET.register_namespace('atom', ATOM_NS)
+
     rss = ET.Element('rss', version="2.0")
-    rss.set(f'xmlns:atom', ATOM_NS)
+    # KORREKTUR: Entferne das explizite Setzen des Namespace-Attributs.
+    # rss.set(f'xmlns:atom', ATOM_NS) # <- Diese Zeile wurde entfernt
+
     channel = ET.SubElement(rss, 'channel')
 
     # Channel-Metadaten
@@ -322,7 +326,7 @@ def create_rss_feed(items_data):
     ET.SubElement(channel, 'pubDate').text = now_rfc822
     ET.SubElement(channel, 'generator').text = "Zotero Feed Generator Script (Minimal)"
 
-    # Atom Link (self)
+    # Atom Link (self) - ET wird den Namespace hierfür korrekt deklarieren
     atom_link_attrib = { 'href': FEED_URL, 'rel': 'self', 'type': 'application/rss+xml' }
     ET.SubElement(channel, f'{{{ATOM_NS}}}link', attrib=atom_link_attrib)
 
@@ -401,13 +405,12 @@ def create_rss_feed(items_data):
 
     # XML-Baum speichern
     try:
-        # NEU: XML-Baum vor dem Speichern formatieren (Einrückung hinzufügen)
+        # XML-Baum vor dem Speichern formatieren (Einrückung hinzufügen)
         # Verfügbar ab Python 3.9
-        # Benutzt 2 Leerzeichen für die Einrückung (space="  ")
-        # Level=0 startet die Einrückung beim Root-Element
         ET.indent(rss, space="  ", level=0)
 
         tree = ET.ElementTree(rss)
+        # method='xml' ist wichtig, damit registrierte Namespaces korrekt verwendet werden
         tree.write(OUTPUT_FILENAME, encoding="utf-8", xml_declaration=True, method='xml')
         logging.info(f"{item_count} Einträge erfolgreich formatiert in '{OUTPUT_FILENAME}' geschrieben.")
         return True
@@ -424,7 +427,7 @@ def create_rss_feed(items_data):
 
 # --- Hauptausführung ---
 if __name__ == "__main__":
-    logging.info("Starte Zotero RSS Feed Generator Skript (Minimal - Angepasster Titel - Formatiert)...")
+    logging.info("Starte Zotero RSS Feed Generator Skript (Minimal - Angepasster Titel - Formatiert - NS Fix)...")
     zotero_items_data = fetch_zotero_items()
     if zotero_items_data is not None and len(zotero_items_data) > 0:
         if create_rss_feed(zotero_items_data):
