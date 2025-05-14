@@ -101,7 +101,7 @@ def format_authors(creators):
             if name_str:
                 author_list.append(name_str)
 
-    return ", ".join(author_list)
+    return "; ".join(author_list)
 
 def find_best_link_json(item_data):
     """Sucht den besten Link (DOI, URL) aus den JSON-Daten und kodiert ihn korrekt."""
