@@ -25,6 +25,17 @@ DIRECTION = "desc" # Sortierrichtung beim API-Abruf
 # GitHub Pages Konfiguration (Basis für die Feed-URL-Konstruktion)
 GITHUB_USERNAME = "184467gianluca"
 REPO_NAME = "institut-zotero-feed"
+
+# NEU: Dictionaries für die Erkennung von Monatsnamen in Datumsangaben
+MONTH_MAP_DE = {
+    'januar': 1, 'februar': 2, 'märz': 3, 'april': 4, 'mai': 5, 'juni': 6,
+    'juli': 7, 'august': 8, 'september': 9, 'oktober': 10, 'november': 11, 'dezember': 12
+}
+MONTH_MAP_EN = {
+    'january': 1, 'february': 2, 'march': 3, 'april': 4, 'may': 5, 'june': 6,
+    'july': 7, 'august': 8, 'september': 9, 'october': 10, 'november': 11, 'december': 12
+}
+MONTH_MAP_COMBINED = {**MONTH_MAP_DE, **MONTH_MAP_EN}
 # --- Ende Globale Konfiguration ---
 
 # XML-Namespace für Atom Link
@@ -59,25 +70,39 @@ def clean_html(raw_html):
 def parse_date(date_str):
     """Versucht, einen Datumsstring in ein datetime-Objekt umzuwandeln.
     Wird für die Sortierung der Einträge nach Publikationsdatum benötigt.
+    Erkennt jetzt auch Monatsnamen.
     """
     if not date_str:
         return datetime.min # Gib ein sehr altes Datum zurück, um Einträge ohne Datum nach hinten zu sortieren
     
     date_str_val = str(date_str).strip()
-    # Verschiedene Formate durchprobieren, von spezifisch bis allgemein
-    for fmt in ('%Y-%m-%d', '%Y-%m', '%Y'):
-        try:
-            return datetime.strptime(date_str_val, fmt)
-        except ValueError:
-            continue # Nächstes Format versuchen
-            
-    # Fallback für reine vierstellige Jahreszahlen im Text
-    match = re.search(r'\b(\d{4})\b', date_str_val)
-    if match:
-        try:
-            return datetime.strptime(match.group(1), '%Y')
-        except ValueError:
-            pass
+    
+    # Priorität 1: YYYY-MM-DD
+    try:
+        return datetime.strptime(date_str_val, '%Y-%m-%d')
+    except ValueError:
+        pass
+        
+    # Priorität 2: YYYY-MM
+    try:
+        return datetime.strptime(date_str_val, '%Y-%m')
+    except ValueError:
+        pass
+
+    # Priorität 3: Monatsname YYYY (z.B. "Mai 2024" oder "december 2023")
+    date_str_val_lower = date_str_val.lower()
+    year_match = re.search(r'\b(\d{4})\b', date_str_val_lower)
+    if year_match:
+        year = int(year_match.group(1))
+        for month_name, month_num in MONTH_MAP_COMBINED.items():
+            if month_name in date_str_val_lower:
+                return datetime(year, month_num, 1) # Gibt den ersten Tag des erkannten Monats zurück
+    
+    # Priorität 4: Nur YYYY
+    try:
+        return datetime.strptime(date_str_val, '%Y')
+    except ValueError:
+        pass
 
     logging.warning(f"Konnte kein valides Datum aus '{date_str_val}' für die Sortierung parsen.")
     return datetime.min # Fallback, wenn kein Format passt
@@ -122,14 +147,12 @@ def format_authors(creators, single_author_mode=False):
     if not author_list:
         return ""
 
-    # NEU: Logik für den Single-Author-Modus
     if single_author_mode:
         if len(author_list) > 1:
             return f"{author_list[0]} et al."
         else:
             return author_list[0]
     else:
-        # Bisherige Logik: alle Autoren mit Semikolon trennen
         return "; ".join(author_list)
 
 def find_best_link_json(item_data, fallback_url=None):
@@ -180,21 +203,17 @@ def find_best_link_json(item_data, fallback_url=None):
 def get_categories_json(item_data, date_str):
     """Extrahiert Kategorien für einen RSS-Eintrag. Fügt das Jahr und ggf. das detailliertere Datum hinzu."""
     categories = []
-    # Füge immer das Jahr als Kategorie hinzu, falls es extrahiert werden kann.
     year = extract_year(date_str)
     if year:
         categories.append(year)
     
-    # NEU: Füge das volle Datum (YYYY-MM oder YYYY-MM-DD) als zusätzliche Kategorie hinzu,
-    # um eine detailliertere Filterung im CMS zu ermöglichen.
     if date_str:
         date_str_val = str(date_str).strip()
-        # Sucht nach einem Muster, das mit YYYY-MM beginnt und optional -DD hat.
         match_detailed_date = re.match(r'^\d{4}-\d{2}(?:-\d{2})?$', date_str_val)
         if match_detailed_date:
             categories.append(match_detailed_date.group(0))
 
-    return list(set(categories)) # Entfernt Duplikate, falls date_str nur das Jahr war.
+    return list(set(categories))
 
 
 def fetch_zotero_items(group_id_param, item_type_param, sort_by_param, direction_param, limit_param, single_author_mode,
@@ -256,7 +275,6 @@ def fetch_zotero_items(group_id_param, item_type_param, sort_by_param, direction
                         continue
                     
                     date_str = item_data.get('date')
-                    # Daten für jedes Item extrahieren und verarbeiten
                     all_items_data.append({
                         'zotero_key': item.get('key') or item_data.get('key'),
                         'authors': format_authors(item_data.get('creators', []), single_author_mode),
@@ -266,7 +284,7 @@ def fetch_zotero_items(group_id_param, item_type_param, sort_by_param, direction
                         'journal': clean_html(item_data.get('journalAbbreviation')) or clean_html(item_data.get('publicationTitle')),
                         'volume': str(item_data.get('volume', '')).strip(),
                         'link': find_best_link_json(item_data, fallback_url=current_fallback_url),
-                        'categories': get_categories_json(item_data, date_str), # Geändert, um den vollen Datumsstring zu übergeben
+                        'categories': get_categories_json(item_data, date_str),
                     })
                 except Exception as e:
                     logging.error(f"Fehler beim Verarbeiten von Item (Key: {item.get('key', 'N/A')}): {e}", exc_info=True)
@@ -283,7 +301,6 @@ def fetch_zotero_items(group_id_param, item_type_param, sort_by_param, direction
             logging.error(f"Unerwarteter Fehler während des API-Abrufs für {ag_name_label_override}: {e}", exc_info=True)
             break
             
-    # Sortiere die gesammelten Daten nach dem geparsten Datum (absteigend)
     all_items_data.sort(key=lambda item: item['parsed_date'], reverse=True)
     
     logging.info(f"Insgesamt {len(all_items_data)} Einträge von Zotero für {ag_name_label_override} erfolgreich für den Feed vorbereitet und sortiert.")
@@ -317,7 +334,6 @@ def create_rss_feed(items_data, output_filename_param, channel_title_param, chan
     for item_data in items_data:
         item = ET.SubElement(channel, 'item')
         title_parts = []
-        # Daten aus dem aufbereiteten Dictionary holen
         authors = item_data.get('authors')
         year = item_data.get('year')
         paper_title = item_data.get('title', '[Titel nicht verfügbar]')
