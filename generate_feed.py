@@ -177,16 +177,24 @@ def find_best_link_json(item_data, fallback_url=None):
         logging.warning(f"Kein spezifischer Link (DOI/URL) und kein Fallback-URL für Item mit Key {item_key} gefunden.")
         return None
 
-# KORRIGIERT: Fehlende Funktion wieder eingefügt.
-def get_categories_json(item_data, year):
-    """Extrahiert Kategorien für einen RSS-Eintrag. Aktuell nur das Jahr."""
+def get_categories_json(item_data, date_str):
+    """Extrahiert Kategorien für einen RSS-Eintrag. Fügt das Jahr und ggf. das detailliertere Datum hinzu."""
     categories = []
-    if not isinstance(item_data, dict):
-        logging.warning(f"Unerwartetes Format für item_data in get_categories_json: {item_data}")
-        return categories
-    if year and str(year).isdigit() and len(str(year)) == 4:
-        categories.append(str(year))
-    return list(set(categories))
+    # Füge immer das Jahr als Kategorie hinzu, falls es extrahiert werden kann.
+    year = extract_year(date_str)
+    if year:
+        categories.append(year)
+    
+    # NEU: Füge das volle Datum (YYYY-MM oder YYYY-MM-DD) als zusätzliche Kategorie hinzu,
+    # um eine detailliertere Filterung im CMS zu ermöglichen.
+    if date_str:
+        date_str_val = str(date_str).strip()
+        # Sucht nach einem Muster, das mit YYYY-MM beginnt und optional -DD hat.
+        match_detailed_date = re.match(r'^\d{4}-\d{2}(?:-\d{2})?$', date_str_val)
+        if match_detailed_date:
+            categories.append(match_detailed_date.group(0))
+
+    return list(set(categories)) # Entfernt Duplikate, falls date_str nur das Jahr war.
 
 
 def fetch_zotero_items(group_id_param, item_type_param, sort_by_param, direction_param, limit_param, single_author_mode,
@@ -253,12 +261,12 @@ def fetch_zotero_items(group_id_param, item_type_param, sort_by_param, direction
                         'zotero_key': item.get('key') or item_data.get('key'),
                         'authors': format_authors(item_data.get('creators', []), single_author_mode),
                         'year': extract_year(date_str),
-                        'parsed_date': parse_date(date_str), # NEU: Datum für Sortierung parsen
+                        'parsed_date': parse_date(date_str),
                         'title': clean_html(item_data.get('title', '')),
                         'journal': clean_html(item_data.get('journalAbbreviation')) or clean_html(item_data.get('publicationTitle')),
                         'volume': str(item_data.get('volume', '')).strip(),
                         'link': find_best_link_json(item_data, fallback_url=current_fallback_url),
-                        'categories': get_categories_json(item_data, extract_year(date_str)),
+                        'categories': get_categories_json(item_data, date_str), # Geändert, um den vollen Datumsstring zu übergeben
                     })
                 except Exception as e:
                     logging.error(f"Fehler beim Verarbeiten von Item (Key: {item.get('key', 'N/A')}): {e}", exc_info=True)
@@ -275,7 +283,7 @@ def fetch_zotero_items(group_id_param, item_type_param, sort_by_param, direction
             logging.error(f"Unerwarteter Fehler während des API-Abrufs für {ag_name_label_override}: {e}", exc_info=True)
             break
             
-    # NEU: Sortiere die gesammelten Daten nach dem geparsten Datum (absteigend)
+    # Sortiere die gesammelten Daten nach dem geparsten Datum (absteigend)
     all_items_data.sort(key=lambda item: item['parsed_date'], reverse=True)
     
     logging.info(f"Insgesamt {len(all_items_data)} Einträge von Zotero für {ag_name_label_override} erfolgreich für den Feed vorbereitet und sortiert.")
